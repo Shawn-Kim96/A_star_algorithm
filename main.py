@@ -28,7 +28,8 @@ python main.py --video 0  # Does not generate the video
 from collections import defaultdict
 import heapq
 import matplotlib.pyplot as plt
-import os
+from io import BytesIO
+import numpy as np
 import cv2
 import argparse
 from tqdm import tqdm
@@ -39,43 +40,150 @@ SJSU_ID = "018219422"
 logging.basicConfig(level=logging.INFO)
 
 
+class Algorithm:
+    def __init__(self, name, graph_info, node_info, start_node, end_node):
+        self.name = name
+        self.graph_info = graph_info
+        self.node_info = node_info
+        self.start_node = start_node
+        self.end_node = end_node
+        self.open_set = []
+        self.closed_set = set()
+        self.min_distance_from_start = defaultdict(lambda: float('inf'))
+        self.min_distance_from_start[start_node] = 0.0
+        self.path = []
+        self.distance_history = []
+        self.visualize_dict = {
+            "node_searched": [],  # black
+            "node_searching": [],  # blue
+        }
+        self.result = ([], [])
+        self.step = 0
+        self.previous_distance = 0
+        self.finished = False
+
+    def heuristic(self, current_node):
+        # Override in subclasses if needed
+        return 0
+
+    def step_algorithm(self):
+        # Override in subclasses
+        pass
+
+
+class DijkstraAlgorithm(Algorithm):
+    def __init__(self, graph_info, node_info, start_node, end_node):
+        super().__init__('Dijkstra', graph_info, node_info, start_node, end_node)
+        heapq.heappush(self.open_set, (0, [self.start_node], [0]))
+
+    def step_algorithm(self):
+        if not self.open_set or self.finished:
+            self.finished = True
+            return
+
+        current_distance, path, distance_history = heapq.heappop(self.open_set)
+        current_node = path[-1]
+
+        if current_node in self.closed_set:
+            return
+
+        self.closed_set.add(current_node)
+        self.min_distance_from_start[current_node] = current_distance
+
+        # Visualization
+        self.visualize_dict["node_searching"].append(self.node_info[current_node])
+
+        if current_node == self.end_node and not self.result[0]:
+            self.result = (path, distance_history)
+            self.finished = True
+
+        for next_node, diff_distance in self.graph_info[current_node]:
+            if next_node in self.closed_set:
+                continue
+
+            next_distance = current_distance + diff_distance
+
+            if next_distance < self.min_distance_from_start[next_node]:
+                self.min_distance_from_start[next_node] = next_distance
+                heapq.heappush(self.open_set, (next_distance, path + [next_node], distance_history + [next_distance]))
+
+
+class AStarAlgorithm(Algorithm):
+    def __init__(self, epsilon, graph_info, node_info, start_node, end_node):
+        super().__init__(f'A*_epsilon_{epsilon}', graph_info, node_info, start_node, end_node)
+        self.epsilon = epsilon
+        heapq.heappush(self.open_set, (0 + self.epsilon * self.heuristic(self.start_node), 0, [self.start_node], [0]))
+
+    def heuristic(self, current_node):
+        # Euclidean distance between current node and end node
+        x1, y1 = self.node_info[current_node]
+        x2, y2 = self.node_info[self.end_node]
+        return np.hypot(x2 - x1, y2 - y1)
+
+    def step_algorithm(self):
+        if not self.open_set or self.finished:
+            self.finished = True
+            return
+
+        est_total_cost, current_distance, path, distance_history = heapq.heappop(self.open_set)
+        current_node = path[-1]
+
+        if current_node in self.closed_set:
+            return
+
+        self.closed_set.add(current_node)
+        self.min_distance_from_start[current_node] = current_distance
+
+        # Visualization
+        self.visualize_dict["node_searching"].append(self.node_info[current_node])
+
+        if current_node == self.end_node and not self.result[0]:
+            self.result = (path, distance_history)
+            self.finished = True
+
+        for next_node, diff_distance in self.graph_info[current_node]:
+            if next_node in self.closed_set:
+                continue
+
+            tentative_g_score = current_distance + diff_distance
+
+            if tentative_g_score < self.min_distance_from_start[next_node]:
+                self.min_distance_from_start[next_node] = tentative_g_score
+                est_total_cost = tentative_g_score + self.epsilon * self.heuristic(next_node)
+                heapq.heappush(self.open_set, (est_total_cost, tentative_g_score, path + [next_node], distance_history + [tentative_g_score]))
+
+
 class DataProcessor:
     def __init__(self, make_video: bool, steps_per_frame: int):
         self.m = 0
         self.n = 0
         self.start_node = 0
         self.end_node = 0
-        self.graph_info = defaultdict(list)  # graph with data structure of hash map; start_node: [(node1, distance1), (node2, distance2), ... ]
-        self.node_info = [(None, None)]  # node_info[i] = ith node (x, y), 0th index have no meaning
-        self.fig, self.ax = None, None  # base background image for video, update graph based on this fig, ax.
-        self.make_video = make_video  # determine whether to make video
-        self.steps_per_frame = int(steps_per_frame)  # video frame per dijkstra algorithm step
-    
+        self.graph_info = defaultdict(list)
+        self.node_info = [(None, None)]
+        self.make_video = make_video
+        self.steps_per_frame = int(steps_per_frame)
+        self.algorithms = []
+        self.frames = []
+
     def process_input_files(self):
-        """
-        preprocess input files.
-        """
-        # process input.txt
         logging.info("[Data Preprocessing] :: input.txt")
         input_info = []
         with open('input.txt', 'r') as f:
             for context in f:
                 input_info.append(context.rstrip('\n').split(' '))
 
-        # 1. get the information from first 3 lines
         _, self.start_node, self.end_node = input_info[:3]
         self.start_node = int(self.start_node[0])
         self.end_node = int(self.end_node[0])
 
-        # 2. get the information about distance from 4th line
         distance_info = input_info[3:]
-        distance_info.sort()  # to maintain node order (starting from small)
+        distance_info.sort()
         for start, end, distance in distance_info:
             start, end, distance = int(start), int(end), float(distance)
             self.graph_info[start].append((end, distance))
             self.graph_info[end].append((start, distance))
 
-        # process coords.txt
         logging.info("[Data Preprocessing] :: coords.txt")
         with open('coords.txt', 'r') as f:
             for context in f:
@@ -84,195 +192,136 @@ class DataProcessor:
                 self.m = max(self.m, x)
                 self.n = max(self.n, y)
                 self.node_info.append((x, y))
-        
 
-    def dijkstras_algorithm(self):
-        """
-        method: use breadth-first-search to implement dijkstra's algorithm
+    def initialize_algorithms(self):
+        logging.info("[Initializing Algorithms]")
+        # Initialize Dijkstra's algorithm
+        self.algorithms.append(DijkstraAlgorithm(self.graph_info, self.node_info, self.start_node, self.end_node))
+        # Initialize A* algorithms with epsilons from 1 to 5
+        for epsilon in range(1, 6):
+            self.algorithms.append(AStarAlgorithm(epsilon, self.graph_info, self.node_info, self.start_node, self.end_node))
 
-        1. start with inital point (self.start_node)
-        2. iterate the neighborhood node, and append it to priority queue.
-            - Use heapq to always obtain the smallest distance with the path.
+    def run_algorithms(self):
+        logging.info("[Running Algorithms] :: Running all algorithms and generating frames")
+        step_counter = 0
+        max_steps = 0
+        for algo in self.algorithms:
+            max_steps = max(max_steps, len(self.graph_info) * len(self.graph_info))
 
-        """
-        logging.info("[Running Algorithm] :: Running Dijkstras Algorithm and generating images")
-        # use heapq (priority queue) to implement this algorithm
-        priority_queue = [(0, [self.start_node], [0])]  # (distance: float, path: list, distance_history: list)
-
-        # to ignore duplicates, we use graph to check whether we have visited a node.
-        min_distance_from_start = defaultdict(lambda: float('inf'))
-        min_distance_from_start[self.start_node] = 0.0
-
-        # hash map for visualization
-        visualize_dict = {
-            "node_searched": [],  # black
-            "node_searching": [],  # blue
-        }
-        result = []  # final optimized distance path
-        step, previous_distance= 0, 0
-        
-        with tqdm(desc="Processing Nodes") as pbar:
-            while priority_queue:
-                current_distance, path, distance_history = heapq.heappop(priority_queue)
-                current_node = path[-1]
-
-                min_distance_from_start[current_node] = current_distance
-
-                # update visualize_dict for images
-                if current_distance > previous_distance:
-                    step += 1
-                    previous_distance = current_distance
-
-                # generate video for every steps_per_frame
-                visualize_dict["node_searching"].append(self.node_info[current_node])
-                if step % self.steps_per_frame == 0:
-                    self.generate_image_for_step(step, visualize_dict)
-                    # update step_nodes (move to searched, and initalize searching)
-                    visualize_dict["node_searched"].extend(visualize_dict["node_searching"])
-                    visualize_dict["node_searching"] = []
-                    
-                    # visualize_dict["node_searching"] = [self.node_info[current_node]]
-                    step += 1
-                    
-                
-                for next_node, diff_distance in self.graph_info[current_node]:
-                    next_distance = current_distance + diff_distance
-                    
-                    if next_node == self.end_node and not result:
-                        result = (path + [next_node], distance_history + [next_distance])
-                    
-                    if next_distance < min_distance_from_start[next_node]:
-                        min_distance_from_start[next_node] = next_distance
-                        heapq.heappush(priority_queue, (next_distance, path + [next_node], distance_history + [next_distance]))
-                
+        with tqdm(total=max_steps, desc="Processing Steps") as pbar:
+            while not all(algo.finished for algo in self.algorithms):
+                for algo in self.algorithms:
+                    if not algo.finished:
+                        algo.step_algorithm()
+                if step_counter % self.steps_per_frame == 0:
+                    self.generate_combined_image_for_step()
+                step_counter += 1
                 pbar.update(1)
 
-        return result
-    
-
-    def generate_base_graph_image(self):
-        """
-        generate graph image that is used for all steps.
-        """
-        if self.fig is not None and self.ax is not None:
-            return
-
-        if self.m > self.n:
-            divider = 12 / self.m
-            figsize = (12, self.n * divider)
-        else:
-            divider = 12 / self.n
-            figsize = (self.m * divider, 12)
-        
-        self.fig, self.ax = plt.subplots(figsize=figsize)
-
-        # 1. draw all edges in graph
+    def generate_base_graph_image(self, algo):
+        fig, ax = plt.subplots(figsize=(5, 5))
+        # Draw all edges
         for node1, neighbors_info in self.graph_info.items():
             node1_x, node1_y = self.node_info[node1]
             for node2, _ in neighbors_info:
                 node2_x, node2_y = self.node_info[node2]
-                self.ax.plot([node1_x, node2_x], [node1_y, node2_y], 'b-', linewidth=0.5, alpha=0.2)
-        
-        # 2. draw all nodes in graph
-        for _, (x, y) in enumerate(self.node_info[1:]):
-            self.ax.scatter(x, y, s=50, color='tab:blue', alpha=0.5)
-            
+                ax.plot([node1_x, node2_x], [node1_y, node2_y], 'b-', linewidth=0.5, alpha=0.2)
+
+        # Draw all nodes
+        for idx, (x, y) in enumerate(self.node_info[1:], start=1):
+            ax.scatter(x, y, s=50, color='tab:blue', alpha=0.5)
+            ax.text(x, y, str(idx), fontsize=9)
+
+        # Start and end nodes
         start_x, start_y = self.node_info[self.start_node]
         end_x, end_y = self.node_info[self.end_node]
-        self.ax.scatter(start_x, start_y, s = 300, color = 'g', alpha=1)
-        self.ax.scatter(end_x, end_y, s = 300, color = 'r', alpha=1)
-        
+        ax.scatter(start_x, start_y, s=100, color='g', alpha=1)
+        ax.scatter(end_x, end_y, s=100, color='r', alpha=1)
 
-    def generate_image_for_step(self, step, visualize_dict):
-        """
-        generate graph image for every steps.
-        """        
-        self.generate_base_graph_image()
-        start_and_end_node = [self.node_info[self.start_node], self.node_info[self.end_node]]
+        return fig, ax
 
-        for state, node_list in visualize_dict.items():
-            if state == "node_searched":
-                for x, y in node_list:
-                    if (x, y) in start_and_end_node:
-                        continue
-                    self.ax.scatter(x, y, color = 'tab:gray', s=300, alpha=1)
-            elif state == "node_searching":
-                for x, y in node_list:
-                    if (x, y) in start_and_end_node:
-                        continue
-                    self.ax.scatter(x, y, color = 'b', s=300, alpha=1)
+    def generate_combined_image_for_step(self):
+        images = []
+        for algo in self.algorithms:
+            fig, ax = self.generate_base_graph_image(algo)
+            # Draw searched nodes
+            for x, y in algo.visualize_dict["node_searched"]:
+                ax.scatter(x, y, color='tab:gray', s=100, alpha=1)
+            # Draw searching nodes
+            for x, y in algo.visualize_dict["node_searching"]:
+                ax.scatter(x, y, color='b', s=100, alpha=1)
+            # Clear searching nodes after plotting
+            algo.visualize_dict["node_searched"].extend(algo.visualize_dict["node_searching"])
+            algo.visualize_dict["node_searching"] = []
+            ax.set_title(algo.name)
+            buf = BytesIO()
+            fig.savefig(buf, format='png')
+            buf.seek(0)
+            image = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+            image = cv2.imdecode(image, cv2.IMREAD_COLOR)
+            images.append(image)
+            plt.close(fig)
 
-        if 'images' not in os.listdir():
-            os.mkdir('images')
+        # Combine images into a 2x3 grid
+        row1 = np.hstack(images[:3])
+        row2 = np.hstack(images[3:])
+        combined_image = np.vstack((row1, row2))
+        self.frames.append(combined_image)
 
-        self.fig.savefig(f'images/{step:04d}.png')
-        # self.fig.clear()
-    
+    def generate_final_images(self):
+        logging.info("[Data Visualization] :: Generating final images")
+        for algo in self.algorithms:
+            fig, ax = self.generate_base_graph_image(algo)
+            path = algo.result[0]
+            for i in range(len(path) - 1):
+                node1 = path[i]
+                node2 = path[i + 1]
+                node1_x, node1_y = self.node_info[node1]
+                node2_x, node2_y = self.node_info[node2]
+                ax.plot([node1_x, node2_x], [node1_y, node2_y], 'r-', linewidth=3, alpha=1)
+            ax.set_title(algo.name + " - Final Path")
+            buf = BytesIO()
+            fig.savefig(buf, format='png')
+            buf.seek(0)
+            image = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+            image = cv2.imdecode(image, cv2.IMREAD_COLOR)
+            self.frames.append(image)
+            plt.close(fig)
 
-    def generate_final_image(self, optimized_path):
-        """
-        generate graph image that is used for final step.
-        """
-        logging.info("[Data Visualization] :: Generating final image")
-        self.fig, self.ax = None, None
-        self.generate_base_graph_image()
-        for i in range(len(optimized_path)-1):
-            path_start_node, path_end_node = optimized_path[i], optimized_path[i+1]
-            node1_x, node1_y = self.node_info[path_start_node]
-            node2_x, node2_y = self.node_info[path_end_node]
-            self.ax.plot([node1_x, node2_x], [node1_y, node2_y], 'r-', linewidth=3, alpha=1)
-
-        self.fig.savefig(f'images/final.png')
-        self.fig.clear()
-
-    
-    def generate_output_file(self, path_history, distance_history):
-        """
-        generate output.txt file.
-        """
+    def generate_output_file(self):
         logging.info("[Data Result] :: Generating output.txt")
-        node_info_string = " ".join([str(x) for x in path_history])
-        distance_info_string = " ".join([f"{x:.5f}" for x in distance_history])
-
         with open(f"{SJSU_ID}.txt", "w") as file:
-            file.write(node_info_string + '\n' + distance_info_string)
+            for algo in self.algorithms:
+                path = algo.result[0]
+                distance_history = algo.result[1]
+                node_info_string = " ".join([str(x) for x in path])
+                distance_info_string = " ".join([f"{x:.5f}" for x in distance_history])
+                file.write(node_info_string + '\n' + distance_info_string + '\n')
 
-
-    def generate_video_from_images(self):
-        """
-        generate video based on graph images.
-        """
+    def generate_video_from_frames(self):
         logging.info(f"[Data Visualization] :: Generating video, steps_per_frame = {self.steps_per_frame}")
-        image_path_list = sorted([f"images/{x}" for x in os.listdir('images/') if '.png' in x])
-        image_list = [cv2.imread(x) for x in image_path_list]
-        
-        height, width, layers = image_list[0].shape
-
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for mp4 video
+        height, width, layers = self.frames[0].shape
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         video = cv2.VideoWriter(f"{SJSU_ID}.mp4", fourcc, 10, (width, height))
-
-        # Iterate through each image and write it to the video
-        for image in image_list:
-            video.write(image)
-        
-        # Release the video writer
+        for frame in self.frames:
+            video.write(frame)
         video.release()
-        
-        
+
     def main(self):
         start_time = time.time()
         self.process_input_files()
-        optimized_path, optimized_distance_history = self.dijkstras_algorithm()
-        self.generate_final_image(optimized_path)
-        self.generate_output_file(optimized_path, optimized_distance_history)
-        self.generate_video_from_images()
+        self.initialize_algorithms()
+        self.run_algorithms()
+        self.generate_final_images()
+        self.generate_output_file()
+        if self.make_video:
+            self.generate_video_from_frames()
         end_time = time.time()
-        logging.info(f"Visualizing Dijkstras Algorithm completed. Total time = {end_time - start_time:.3f}[s]")
-
+        logging.info(f"Visualizing Algorithms completed. Total time = {end_time - start_time:.3f}[s]")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run Dijktar Algorithm (#018219422)")
+    parser = argparse.ArgumentParser(description="Run Algorithms (#018219422)")
     parser.add_argument('--video', type=int, default=1, help="Set to 1 to generate video, 0 otherwise.")
     parser.add_argument('--steps_per_frame', type=int, default=3, help="Increase value to include more steps in one frame. Default = 3")
     args = parser.parse_args()
