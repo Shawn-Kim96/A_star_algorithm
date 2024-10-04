@@ -1,9 +1,9 @@
-# Dijkstra's Algorithm Visualization
-This project implements Dijkstra's algorithm to find the shortest path between two nodes in a graph. It includes visualization of the algorithm's execution and can optionally generate a video of the process.
+# A* Algorithm Visualization
+This project implements A-star algorithm to find the shortest path between two nodes in a graph. It includes visualization of the algorithm's execution and can optionally generate a video of the process.
 
 
 ## Description
-This Python script implements Dijkstra's algorithm to find the shortest path between two nodes in a graph defined by input.txt and coords.txt. The script generates visualizations of each step and can create a video showcasing the algorithm's progress.
+This Python script implements A-star algorithm to find the shortest path between two nodes in a graph defined by input.txt and coords.txt. The script generates visualizations of each step and can create a video showcasing the algorithm's progress.
 
 ## Features
 - **Graph Input Processing**: Reads graph edges and nodes from `input.txt` and node coordinates from `coords.txt`.
