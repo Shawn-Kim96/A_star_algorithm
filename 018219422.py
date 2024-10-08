@@ -27,6 +27,7 @@ python main.py --video 0  # Does not generate the video
 from collections import defaultdict
 import heapq
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 from io import BytesIO
 import numpy as np
 import cv2
@@ -34,6 +35,7 @@ import argparse
 from tqdm import tqdm
 import logging
 import time
+import psutil  # Added psutil for memory usage tracking
 
 SJSU_ID = "018219422"
 logging.basicConfig(level=logging.INFO)
@@ -60,9 +62,24 @@ class Algorithm:
         self.step = 0
         self.previous_distance = 0
         self.finished = False
-        # For matrixs.
+        # Metrics
         self.iterations = 0
         self.execution_time = 0.0
+        self.memory_usage = 0
+        self.process = psutil.Process()  # Process for memory tracking
+        self.max_memory = 0
+
+    def heuristic(self, current_node):
+        # Override in subclasses if needed
+        return 0
+
+    def step_algorithm(self):
+        # Override in subclasses
+        pass
+
+    def update_memory_usage(self):
+        current_memory = self.process.memory_info().rss
+        self.max_memory = max(self.max_memory, current_memory)
 
 
 class DijkstraAlgorithm(Algorithm):
@@ -79,6 +96,7 @@ class DijkstraAlgorithm(Algorithm):
             return
 
         self.iterations += 1  # Increment iterations
+        self.update_memory_usage()  # Update memory usage
 
         current_distance, path, distance_history = heapq.heappop(self.open_set)
         current_node = path[-1]
@@ -129,6 +147,7 @@ class AStarAlgorithm(Algorithm):
             return
 
         self.iterations += 1  # Increment iterations
+        self.update_memory_usage()  # Update memory usage
 
         est_total_cost, current_distance, path, distance_history = heapq.heappop(self.open_set)
         current_node = path[-1]
@@ -151,12 +170,12 @@ class AStarAlgorithm(Algorithm):
             if next_node in self.closed_set:
                 continue
 
-            g_score = current_distance + diff_distance
+            tentative_g_score = current_distance + diff_distance
 
-            if g_score < self.min_distance_from_start[next_node]:
-                self.min_distance_from_start[next_node] = g_score
-                est_total_cost = g_score + self.epsilon * self.heuristic(next_node)
-                heapq.heappush(self.open_set, (est_total_cost, g_score, path + [next_node], distance_history + [g_score]))
+            if tentative_g_score < self.min_distance_from_start[next_node]:
+                self.min_distance_from_start[next_node] = tentative_g_score
+                est_total_cost = tentative_g_score + self.epsilon * self.heuristic(next_node)
+                heapq.heappush(self.open_set, (est_total_cost, tentative_g_score, path + [next_node], distance_history + [tentative_g_score]))
 
 
 class DataProcessor:
@@ -307,9 +326,11 @@ class DataProcessor:
         # Write metrics to algorithm_cost.txt
         with open("algorithms_cost.txt", "w") as file:
             for algo in self.algorithms:
+                memory_in_kb = algo.max_memory / 1024  # Convert bytes to kilobytes
                 file.write(f"{algo.name}\n")
                 file.write(f"Total Iterations: {algo.iterations}\n")
-                file.write(f"Execution Time: {algo.execution_time:.6f} seconds\n\n")
+                file.write(f"Execution Time: {algo.execution_time:.6f} seconds\n")
+                file.write(f"Peak Memory Usage: {memory_in_kb:.2f} KB\n\n")
 
     def generate_video_from_frames(self):
         logging.info(f"[Data Visualization] :: Generating video, steps_per_frame = {self.steps_per_frame}")
