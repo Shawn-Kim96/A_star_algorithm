@@ -2,7 +2,7 @@
 Script Description:
 -------------------
 
-This Python script implements Dijkstra's algorithm to find the shortest path between two nodes in a graph. The graph is defined by the input files `input.txt` and `coords.txt`, which should be located in the same directory as this script.
+This Python script implements Dijkstra's & A* algorithm to find the shortest path between two nodes in a graph. The graph is defined by the input files `input.txt` and `coords.txt`, which should be located in the same directory as this script.
 
 Key Features:
 - **Graph Input Processing**: Reads graph edges and nodes from `input.txt` and node coordinates from `coords.txt`.
@@ -24,7 +24,6 @@ python main.py --video 1  --steps_per_frame 3  # Generates the video
 python main.py --video 0  # Does not generate the video
 ```
 """
-
 from collections import defaultdict
 import heapq
 import matplotlib.pyplot as plt
@@ -61,25 +60,25 @@ class Algorithm:
         self.step = 0
         self.previous_distance = 0
         self.finished = False
-
-    def heuristic(self, current_node):
-        # Override in subclasses if needed
-        return 0
-
-    def step_algorithm(self):
-        # Override in subclasses
-        pass
+        # For matrixs.
+        self.iterations = 0
+        self.execution_time = 0.0
 
 
 class DijkstraAlgorithm(Algorithm):
     def __init__(self, graph_info, node_info, start_node, end_node):
         super().__init__('Dijkstra', graph_info, node_info, start_node, end_node)
         heapq.heappush(self.open_set, (0, [self.start_node], [0]))
+        self.start_time = time.time()
 
     def step_algorithm(self):
         if not self.open_set or self.finished:
-            self.finished = True
+            if not self.finished:
+                self.execution_time = time.time() - self.start_time
+                self.finished = True
             return
+
+        self.iterations += 1  # Increment iterations
 
         current_distance, path, distance_history = heapq.heappop(self.open_set)
         current_node = path[-1]
@@ -95,6 +94,7 @@ class DijkstraAlgorithm(Algorithm):
 
         if current_node == self.end_node and not self.result[0]:
             self.result = (path, distance_history)
+            self.execution_time = time.time() - self.start_time
             self.finished = True
 
         for next_node, diff_distance in self.graph_info[current_node]:
@@ -113,6 +113,7 @@ class AStarAlgorithm(Algorithm):
         super().__init__(f'A*_epsilon_{epsilon}', graph_info, node_info, start_node, end_node)
         self.epsilon = epsilon
         heapq.heappush(self.open_set, (0 + self.epsilon * self.heuristic(self.start_node), 0, [self.start_node], [0]))
+        self.start_time = time.time()
 
     def heuristic(self, current_node):
         # Euclidean distance between current node and end node
@@ -122,8 +123,12 @@ class AStarAlgorithm(Algorithm):
 
     def step_algorithm(self):
         if not self.open_set or self.finished:
-            self.finished = True
+            if not self.finished:
+                self.execution_time = time.time() - self.start_time
+                self.finished = True
             return
+
+        self.iterations += 1  # Increment iterations
 
         est_total_cost, current_distance, path, distance_history = heapq.heappop(self.open_set)
         current_node = path[-1]
@@ -139,18 +144,19 @@ class AStarAlgorithm(Algorithm):
 
         if current_node == self.end_node and not self.result[0]:
             self.result = (path, distance_history)
+            self.execution_time = time.time() - self.start_time
             self.finished = True
 
         for next_node, diff_distance in self.graph_info[current_node]:
             if next_node in self.closed_set:
                 continue
 
-            tentative_g_score = current_distance + diff_distance
+            g_score = current_distance + diff_distance
 
-            if tentative_g_score < self.min_distance_from_start[next_node]:
-                self.min_distance_from_start[next_node] = tentative_g_score
-                est_total_cost = tentative_g_score + self.epsilon * self.heuristic(next_node)
-                heapq.heappush(self.open_set, (est_total_cost, tentative_g_score, path + [next_node], distance_history + [tentative_g_score]))
+            if g_score < self.min_distance_from_start[next_node]:
+                self.min_distance_from_start[next_node] = g_score
+                est_total_cost = g_score + self.epsilon * self.heuristic(next_node)
+                heapq.heappush(self.open_set, (est_total_cost, g_score, path + [next_node], distance_history + [g_score]))
 
 
 class DataProcessor:
@@ -204,19 +210,19 @@ class DataProcessor:
     def run_algorithms(self):
         logging.info("[Running Algorithms] :: Running all algorithms and generating frames")
         step_counter = 0
-        max_steps = 0
-        for algo in self.algorithms:
-            max_steps = max(max_steps, len(self.graph_info) * len(self.graph_info))
-
+        max_steps = len(self.graph_info) * len(self.graph_info)
         with tqdm(total=max_steps, desc="Processing Steps") as pbar:
             while not all(algo.finished for algo in self.algorithms):
                 for algo in self.algorithms:
                     if not algo.finished:
                         algo.step_algorithm()
-                if step_counter % self.steps_per_frame == 0:
+                if step_counter % self.steps_per_frame == 0 and self.make_video:
                     self.generate_combined_image_for_step()
                 step_counter += 1
                 pbar.update(1)
+        # Ensure that any remaining frames are generated
+        if self.make_video:
+            self.generate_combined_image_for_step()
 
     def generate_base_graph_image(self, algo):
         fig, ax = plt.subplots(figsize=(5, 5))
@@ -289,7 +295,8 @@ class DataProcessor:
             plt.close(fig)
 
     def generate_output_file(self):
-        logging.info("[Data Result] :: Generating output.txt")
+        logging.info("[Data Result] :: Generating output files")
+        # Write paths and distances to <SJSU_ID>.txt
         with open(f"{SJSU_ID}.txt", "w") as file:
             for algo in self.algorithms:
                 path = algo.result[0]
@@ -297,6 +304,12 @@ class DataProcessor:
                 node_info_string = " ".join([str(x) for x in path])
                 distance_info_string = " ".join([f"{x:.5f}" for x in distance_history])
                 file.write(node_info_string + '\n' + distance_info_string + '\n')
+        # Write metrics to algorithm_cost.txt
+        with open("algorithms_cost.txt", "w") as file:
+            for algo in self.algorithms:
+                file.write(f"{algo.name}\n")
+                file.write(f"Total Iterations: {algo.iterations}\n")
+                file.write(f"Execution Time: {algo.execution_time:.6f} seconds\n\n")
 
     def generate_video_from_frames(self):
         logging.info(f"[Data Visualization] :: Generating video, steps_per_frame = {self.steps_per_frame}")
